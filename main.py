@@ -1,16 +1,19 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import base64
 import openai
 import os
 
-# 🔐 Получаем ключ из переменной окружения (не вставлять прямо в код)
-openai.api_key = os.getenv("OPENAI_API_KEY")
+# Получаем ключ из переменной окружения
+api_key = os.getenv("OPENAI_API_KEY")
+if not api_key:
+    print("❌ OPENAI_API_KEY не найден! Установите переменную окружения.")
+openai.api_key = api_key
 
 app = FastAPI()
 
-# ✅ CORS для Figma Web
+# Настройки CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -20,39 +23,43 @@ app.add_middleware(
 )
 
 class ImageRequest(BaseModel):
-    image: str  # base64 PNG или JPG
+    image: str  # base64 строка
 
 @app.post("/analyze")
 async def analyze(request: ImageRequest):
+    if not api_key:
+        raise HTTPException(status_code=500, detail="OPENAI_API_KEY не задан. Добавьте его в Render → Environment Variables.")
+
     image_data = request.image.replace("data:image/png;base64,", "").replace("data:image/jpeg;base64,", "")
     image_bytes = base64.b64decode(image_data)
 
-    response = openai.ChatCompletion.create(
-        model="gpt-4o",
-        messages=[
-            {
-                "role": "system",
-                "content": "Ты — UI-дизайнер. На основе изображения создай JSON с блоками, текстами и кнопками для макета в Figma. Игнорируй фотографии. Структурируй как JSON: blocks, texts, buttons, sections."
-            },
-            {
-                "role": "user",
-                "content": [
-                    { "type": "text", "text": "Создай JSON-макет из интерфейса на изображении." },
-                    {
-                        "type": "image_url",
-                        "image_url": { "url": "data:image/png;base64," + image_data }
-                    }
-                ]
-            }
-        ],
-        temperature=0.2,
-        max_tokens=2000
-    )
-
-    content = response.choices[0].message.content
     try:
-        json_data = eval(content)
-    except:
-        return { "error": "Ошибка парсинга JSON", "raw": content }
-
-    return json_data
+        response = openai.ChatCompletion.create(
+            model="gpt-4o",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Ты — UI-дизайнер. На основе изображения создай JSON с блоками, текстами и кнопками для макета в Figma."
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        { "type": "text", "text": "Создай JSON-макет интерфейса по изображению." },
+                        {
+                            "type": "image_url",
+                            "image_url": { "url": "data:image/png;base64," + image_data }
+                        }
+                    ]
+                }
+            ],
+            temperature=0.2,
+            max_tokens=2000
+        )
+        content = response.choices[0].message.content
+        try:
+            json_data = eval(content)
+        except:
+            return { "error": "Не удалось распарсить ответ от OpenAI", "raw": content }
+        return json_data
+    except Exception as e:
+        return { "error": "Ошибка при обращении к OpenAI", "detail": str(e) }
